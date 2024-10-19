@@ -1,6 +1,12 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+import urllib.parse
 import time
+
+# Helper function to check if the URL is valid
+def is_valid_url(url):
+    parsed_url = urllib.parse.urlparse(url)
+    return all([parsed_url.scheme, parsed_url.netloc])
 
 # Initialize the Selenium WebDriver (for Chrome, in this case)
 def init_webdriver():
