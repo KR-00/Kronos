@@ -1,116 +1,132 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
-from selenium.common.exceptions import WebDriverException
-import time
-import re
+import sys
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QMessageBox, QInputDialog, QTextEdit, QHBoxLayout
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal
+from modules.route_mapper.crawler import start_crawler
 
-# Function to prompt for port and handle invalid inputs
-def get_port():
-    while True:
-        port = input("Please enter the port Juice Shop is running on (default is 42000): ")
+# Worker class to handle the crawler in a separate thread
+class CrawlerWorker(QThread):
+    crawler_finished = Signal(list)  # Signal emitted when the crawler finishes, sending the result list
 
-        if not port:
-            return 42000
+    def __init__(self, port):
+        super().__init__()
+        self.port = port
+
+    def run(self):
         try:
-            return int(port)
-        except ValueError:
-            print("Invalid input. Please enter a valid port number.")
+            pages = []  # List to hold discovered pages
+            pages = start_crawler(self.port)  # Capture the pages found
+            self.crawler_finished.emit(pages)  # Emit the signal with the list of pages
+        except Exception as e:
+            self.crawler_finished.emit([f"An error occurred: {e}"])
 
-# Function to check if the current page is unique by checking page content
-def is_unique_page(driver, unique_pages, url):
-    # Wait for the page to load
-    time.sleep(2)
 
-    # Get a unique element from the page to check (e.g., page title or specific element)
-    try:
-        page_content = driver.find_element(By.TAG_NAME, 'body').text
-        if page_content not in unique_pages:
-            unique_pages[page_content] = url  # Store the page content and URL
-            return True
-    except NoSuchElementException:
-        pass
-    return False
+class KronosApp(QWidget):
+    def __init__(self):
+        super().__init__()
 
-# Function to discover all pages in the web app, ignoring external URLs and non-HTML files
-def discover_pages(driver, base_url):
-    pages_to_check = [base_url]  # Start with the base URL
-    unique_pages = {}  # Dictionary to track unique page content
-    discovered_urls = []  # List of unique URLs to return
+        # Set up the main window
+        self.setWindowTitle("Kronos")
+        self.setGeometry(100, 100, 600, 400)
+        self.setStyleSheet("background-color: #2c2c2c; color: #CD7F32;")  # Bronze text color
 
-    while pages_to_check:
-        current_url = pages_to_check.pop(0)
+        # Set the application icon (make sure the icon file path is correct)
+        self.setWindowIcon(QIcon("assets/kronos_logo.png"))  # Kronos logo as window icon
+
+        # Create a layout
+        layout = QVBoxLayout()
+
+        # Add Kronos logo at the top of the window
+        logo_label = QLabel(self)
+
+        # Load and resize the Kronos logo
+        logo_pixmap = QPixmap("assets/kronos_logo.png")
+        resized_logo_pixmap = logo_pixmap.scaled(100, 100, Qt.KeepAspectRatio)  # Resize to 100x100 pixels
+
+        logo_label.setPixmap(resized_logo_pixmap)  # Display the resized image
+        logo_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(logo_label)
+
+        # Create a results text area
+        self.results_box = QTextEdit(self)
+        self.results_box.setReadOnly(True)
+        self.results_box.setStyleSheet("background-color: #1e1e1e; color: #CD7F32; padding: 10px; font-size: 12px;")  # Bronze text color for results
+        layout.addWidget(self.results_box)
+
+        # Create the buttons
+        button_layout = QHBoxLayout()
+
+        run_button = QPushButton("Run Crawler")
+        run_button.setStyleSheet("background-color: #1e1e1e; padding: 10px; font-size: 14px; color: #CD7F32;")  # Bronze text color for button
+        run_button.clicked.connect(self.run_crawler)
+        button_layout.addWidget(run_button)
+
+        exit_button = QPushButton("Exit")
+        exit_button.setStyleSheet("background-color: #1e1e1e; padding: 10px; font-size: 14px; color: #CD7F32;")  # Bronze text color for button
+        exit_button.clicked.connect(self.confirm_exit)
+        button_layout.addWidget(exit_button)
+
+        layout.addLayout(button_layout)
+
+        # Set the layout for the window
+        self.setLayout(layout)
+
+        self.crawler_thread = None  # Initialize crawler thread
+
+    def run_crawler(self):
+        # Ask the user for the port in a pop-up input dialog
+        port, ok = QInputDialog.getText(self, "Input Port", "Please enter the port (default is 42000):")
         
-        # Skip known problematic patterns like '/redirect' to avoid loops
-        if '/redirect' in current_url:
-            print(f"Skipping potential redirect loop: {current_url}")
-            continue
+        if ok:
+            if port == "":  # If no port is entered, use the default
+                port = 42000
+            else:
+                try:
+                    port = int(port)  # Convert input to an integer
+                except ValueError:
+                    QMessageBox.critical(self, "Invalid Input", "The port must be a valid number.")
+                    return
 
-        # Skip URLs like 'legal.md' to prevent file downloads
-        if re.search(r'legal\.md$', current_url):
-            print(f"Skipping file download: {current_url}")
-            continue
+            # Start the crawler in a separate thread
+            self.crawler_thread = CrawlerWorker(port)
+            self.crawler_thread.crawler_finished.connect(self.show_crawler_result)
+            self.results_box.clear()  # Clear previous results before running a new crawl
+            self.results_box.append("Crawling started...")  # Notify the user that crawling has started
+            self.crawler_thread.start()  # Start the thread
 
-        try:
-            driver.get(current_url)
+    def show_crawler_result(self, pages):
+        # Display the results when the crawler finishes
+        self.results_box.clear()  # Clear the text box
+        if pages:
+            for page in pages:
+                self.results_box.append(page)  # Add each discovered page to the results box
+        else:
+            self.results_box.append("No pages found.")
 
-            # Avoid external links by checking if the URL starts with the base URL (http://localhost)
-            if not current_url.startswith(base_url):
-                print(f"Ignoring external page: {current_url}")
-                continue
+    def confirm_exit(self):
+        # Show a confirmation dialog before exiting, with no icon
+        exit_message = QMessageBox(self)
+        exit_message.setWindowTitle("Exit Confirmation")
+        exit_message.setText("Do you really want to exit?")
+        exit_message.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        exit_message.setDefaultButton(QMessageBox.No)
+        exit_message.setIcon(QMessageBox.NoIcon)  # No icon for the dialog
+        reply = exit_message.exec()
 
-            # Avoid non-HTML files by skipping URLs that match certain file extensions
-            if re.search(r'\.(pdf|md|jpg|png|zip|gif|jpeg|exe|doc|docx|txt)$', current_url):
-                print(f"Ignoring non-HTML file: {current_url}")
-                continue
+        if reply == QMessageBox.Yes:
+            self.close()
 
-            if is_unique_page(driver, unique_pages, current_url):
-                print(f"Discovered unique page: {current_url}")
-                discovered_urls.append(current_url)
+    def closeEvent(self, event):
+        # Gracefully stop the crawler thread if it is still running
+        if self.crawler_thread and self.crawler_thread.isRunning():
+            self.crawler_thread.terminate()
+        event.accept()
 
-                # Find all links on the current page and add them to the list to check
-                links = driver.find_elements(By.TAG_NAME, "a")
-                for link in links:
-                    href = link.get_attribute("href")
-                    # Only add links that belong to the same domain (localhost) and are not already checked
-                    if href and href.startswith(base_url) and href not in discovered_urls and href not in pages_to_check:
-                        pages_to_check.append(href)
-                    elif href and not href.startswith(base_url):
-                        print(f"Skipping external link: {href}")
-
-        except WebDriverException as e:
-            print(f"Error navigating to {current_url}: {e}")
-            continue  # Skip to the next URL in case of an error
-
-    return discovered_urls
-
-# Main part of the script
-def main():
-    # Get the port from the user
-    port = get_port()
-
-    # Create the base URL for Juice Shop
-    juice_shop_url = f"http://localhost:{port}"
-
-    # Set up Selenium WebDriver for Firefox
-    driver = webdriver.Firefox()
-
-    try:
-        # Open Juice Shop at the specified port
-        driver.get(juice_shop_url)
-
-        # Discover all unique pages
-        unique_pages = discover_pages(driver, juice_shop_url)
-
-        print("\nUnique pages discovered:")
-        for page in unique_pages:
-            print(page)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        # Ensure the browser closes after crawling
-        driver.quit()
-        print("Browser closed.")
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+
+    window = KronosApp()
+    window.show()
+
+    sys.exit(app.exec())
